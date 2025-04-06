@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>観測地点の気温表示</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        #result {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>観測地点の気温表示</h1>
+    <label for="stations">観測地点名を選択してください：</label>
+    <select id="stations">
+        <option value="">-- 観測地点を選択 --</option>
+    </select>
+    <button id="fetchWeather">気象データを取得</button>
+    <div id="result"></div>
+
+    <script>
+        const stationListUrl = "https://www.jma.go.jp/bosai/amedas/const/amedastable.json";
+
+        // 観測地点一覧を取得
+        async function loadStations() {
+            try {
+                const response = await fetch(stationListUrl);
+                const data = await response.json();
+                const stationSelect = document.getElementById("stations");
+
+                // 観測地点名をプルダウンリストに追加
+                for (const stationId in data) {
+                    const option = document.createElement("option");
+                    option.value = stationId;
+                    option.textContent = data[stationId].kjName;
+                    stationSelect.appendChild(option);
+                }
+            } catch (error) {
+                console.error("観測地点データの取得に失敗しました:", error);
+                document.getElementById("result").textContent = "観測地点データの取得に失敗しました。";
+            }
+        }
+
+        // 気象観測データを取得
+        async function fetchWeatherData() {
+            const stationSelect = document.getElementById("stations");
+            const stationId = stationSelect.value;
+            const stationName = stationSelect.options[stationSelect.selectedIndex].text;
+
+            if (!stationId) {
+                document.getElementById("result").textContent = "観測地点を選択してください。";
+                return;
+            }
+
+            // 今日の日付と3時間区分を計算
+            const now = new Date();
+            const yyyymmdd = now.toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD形式
+            const h3 = Math.floor(now.getHours() / 3) * 3; // 3時間区分
+
+            const weatherDataUrl = `https://www.jma.go.jp/bosai/amedas/data/point/${stationId}/${yyyymmdd}_${h3}.json`;
+
+            try {
+                const response = await fetch(weatherDataUrl);
+                if (!response.ok) {
+                    throw new Error("気象観測データの取得に失敗しました。");
+                }
+                const data = await response.json();
+
+                // 最新のデータを取得
+                const latestTime = Object.keys(data).reduce((a, b) => (a > b ? a : b)); // 最大のキー
+                const latestTemp = data[latestTime]?.temp?.[0];
+
+                if (latestTemp !== undefined) {
+                    document.getElementById("result").textContent =
+                        `観測地点名: ${stationName}\n観測地点番号: ${stationId}\n最新の気温: ${latestTemp}℃`;
+                } else {
+                    document.getElementById("result").textContent = "気温データが利用できません。";
+                }
+            } catch (error) {
+                console.error("気象観測データの取得に失敗しました:", error);
+                document.getElementById("result").textContent = "気象観測データの取得に失敗しました。";
+            }
+        }
+
+        // 初期化
+        document.getElementById("fetchWeather").addEventListener("click", fetchWeatherData);
+        loadStations();
+    </script>
+</body>
+</html>
