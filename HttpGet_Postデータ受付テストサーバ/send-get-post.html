@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>CGIテストフォーム</title>
+</head>
+<body>
+    <h1>CGIスクリプト送信テスト</h1>
+
+    <p>URLパラメータ(GET)で送信する</p>
+    <form action="./get-post.cgi" method="get">
+        <label for="name">param1:</label>
+        <input type="text" id="param1" name="param1" value="値１">
+        <br>
+        
+        <label for="city">param2:</label>
+        <input type="text" id="param2" name="param2" value="値２">
+        <br>
+
+        <input type="submit" value="送信">
+    </form>
+
+    <hr>
+    
+    <p>POSTで送信する</p>
+    <form action="./get-post.cgi" method="post">
+        <label for="name">param1:</label>
+        <input type="text" id="param_p1" name="param_p1" value="値３">
+        <br>
+        
+        <label for="city">param2:</label>
+        <input type="text" id="param_p2" name="param_p2"  value="値４">
+        <br>
+
+        <input type="submit" value="送信">
+    </form>
+
+</body>
+</html>
