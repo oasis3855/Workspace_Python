@@ -1,0 +1,43 @@
+name: Local Config
+version: 1.0.0
+schema: v1
+
+models:
+  - name: "Deepseek coder 1.3B"
+    provider: "ollama"
+    model: "deepseek-coder:1.3b"
+    roles: [chat, edit, autocomplete]
+  - name: "Gemma 4 E2B"
+    provider: "ollama"
+    model: "gemma4:e2b"
+    roles: [chat, edit, autocomplete]
+  - name: "Qwen2.5-Coder 1.5B base"
+    provider: "ollama"
+    model: "qwen2.5-coder:1.5b-base"
+    roles: [chat, edit, autocomplete]
+  - name: "Qwen2.5-Coder 1.5B"
+    provider: "ollama"
+    model: "qwen2.5-coder:1.5b"
+    roles: [chat, edit, autocomplete]
+  - name: "Qwen2.5-Coder 3B"
+    provider: "ollama"
+    model: "qwen2.5-coder:3b"
+    roles: [chat, edit, autocomplete]
+  - name: "Qwen2.5-Coder 7B"
+    provider: "ollama"
+    model: "qwen2.5-coder:7b"
+    roles: [chat, edit, autocomplete]
+  - name: "StarCorder2 3B"
+    provider: "ollama"
+    model: "starcoder2:3b"
+    roles: [chat, edit, autocomplete]
+  - name: "stable-code 3B"
+    provider: "ollama"
+    model: "stable-code:3b"
+    roles: [chat, edit, autocomplete]
+
+autocompleteOptions:
+  debounceDelay: 5                # キー入力を止めてから補完を開始するまでの時間（ミリ秒）
+  maxChunks: 50
+  multilineCompletions: always    # 常に複数行の補完を試みる
+

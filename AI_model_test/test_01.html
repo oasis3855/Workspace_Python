@@ -1,0 +1,27 @@
+<html>
+    <script>
+        /**
+         * find_prime_number() - This function finds the first prime number greater than a given number n.
+         *
+         * @param {number} n - The number to start searching for the next prime from.
+         * @return {number} - The first prime number greater than n.
+         */
+        function find_prime_number(n) {
+            var input_number = document.getElementById("input_number").value;
+            for (var i = 2; i <= input_number; i++) {
+                if (isPrime(i)) {
+                    console.log(i);
+                }
+            }
+        }
+        function isPrime(number) {
+            for (var i = 2; i < number; i++) {
+                if (number % i == 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+    </script>
+</html>
