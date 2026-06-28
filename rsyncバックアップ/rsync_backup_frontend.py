@@ -32,6 +32,7 @@ Author:
 
 Version:
     1.0.0 (2026/06/17)
+    1.1.0 (2026/06/28) - FLAG_SIZE_ONLY(タイムスタンプの相違を無視),FLAG_USE_SUFFIX(旧ファイルを同一階層にバックアップ)の機能追加
 """
 
 
@@ -70,7 +71,7 @@ class ProfileEditDialog(tk.Toplevel):
         """
         super().__init__(parent)
         self.title(title)
-        self.geometry("620x340")
+        self.geometry("620x400")
         self.resizable(False, False)
 
         self.result_name = None
@@ -83,7 +84,10 @@ class ProfileEditDialog(tk.Toplevel):
                 "BACKUP_DESTINATION_DIR": "",
                 "EXCLUDE_FILESIZE_MB": 10,
                 "EXCLUDE_FILE_EXTENSION": "bak,tmp",
-                "FLAG_DEBUG_WAIT": False
+                "FLAG_DEBUG_WAIT": False,
+                "FLAG_SIZE_ONLY": False,
+                "FLAG_USE_SUFFIX": False,
+                "FLAG_CHECKSUM": False,
             }
 
         # --- ウィジェットの作成と配置 ---
@@ -182,9 +186,45 @@ class ProfileEditDialog(tk.Toplevel):
             variable=self.var_debug)
         self.chk_debug.grid(row=5, column=1, sticky="w", pady=5, padx=10)
 
+        # 7. サイズ基準 (--size-only)
+        self.var_size_only = tk.BooleanVar(value=current_data.get("FLAG_SIZE_ONLY", False))
+        tk.Checkbutton(
+            frame,
+            text="サイズが同一ならタイムスタンプの変更を無視する (--size-only)",
+            variable=self.var_size_only).grid(
+            row=6,
+            column=1,
+            sticky="w",
+            pady=2,
+            padx=10)
+
+        # 8. 同階層への安全な退避 (--backup)
+        self.var_use_suffix = tk.BooleanVar(value=current_data.get("FLAG_USE_SUFFIX", False))
+        tk.Checkbutton(
+            frame,
+            text="上書き・削除される旧ファイルを同階層に退避する (--backup)",
+            variable=self.var_use_suffix).grid(
+            row=7,
+            column=1,
+            sticky="w",
+            pady=2,
+            padx=10)
+
+        # 9. チェックサム基準 (--checksum)
+        self.var_checksum = tk.BooleanVar(value=current_data.get("FLAG_CHECKSUM", False))
+        tk.Checkbutton(
+            frame,
+            text="ファイルの中身（チェックサム）の相違を検知 (--checksum)",
+            variable=self.var_checksum).grid(
+            row=8,
+            column=1,
+            sticky="w",
+            pady=2,
+            padx=10)
+
         # ボタンエリア
         btn_frame = tk.Frame(frame, pady=10)
-        btn_frame.grid(row=6, column=0, columnspan=2, sticky="e")
+        btn_frame.grid(row=9, column=0, columnspan=2, sticky="e")
 
         tk.Button(
             btn_frame,
@@ -307,7 +347,10 @@ class ProfileEditDialog(tk.Toplevel):
             "BACKUP_DESTINATION_DIR": dst,
             "EXCLUDE_FILESIZE_MB": size,
             "EXCLUDE_FILE_EXTENSION": ext,
-            "FLAG_DEBUG_WAIT": self.var_debug.get()
+            "FLAG_DEBUG_WAIT": self.var_debug.get(),
+            "FLAG_SIZE_ONLY": self.var_size_only.get(),
+            "FLAG_USE_SUFFIX": self.var_use_suffix.get(),
+            "FLAG_CHECKSUM": self.var_checksum.get(),
         }
         self.destroy()
 
@@ -386,6 +429,8 @@ class FrontendApp:
                 "EXCLUDE_FILESIZE_MB": 10,
                 "EXCLUDE_FILE_EXTENSION": "bak,tmp",
                 "FLAG_DEBUG_WAIT": True,
+                "FLAG_SIZE_ONLY": False,
+                "FLAG_USE_SUFFIX": False,
             },
             "本番ドキュメント同期": {
                 "BACKUP_SOURCE_DIR": "/home/user/documents/",
@@ -393,6 +438,8 @@ class FrontendApp:
                 "EXCLUDE_FILESIZE_MB": 50,
                 "EXCLUDE_FILE_EXTENSION": "iso,img,bak,tmp",
                 "FLAG_DEBUG_WAIT": False,
+                "FLAG_SIZE_ONLY": False,
+                "FLAG_USE_SUFFIX": False,
             },
         }
         # 初期ファイルを保存しておく

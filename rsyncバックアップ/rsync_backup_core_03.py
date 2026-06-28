@@ -37,18 +37,29 @@ Version:
     1.0.1 (2026/05/01) - ディレクトリ存在チェック機能を追加
     2.0.0 (2026/05/04) - プレビュー機能, ログ閲覧機能, class PreviewDialog
     3.0.0 (2026/06/14) - JSON形式の設定ファイル(.rsync_backup_python.json)からの読み込み機能を追加
+    3.1.0 (2026/06/28) - FLAG_SIZE_ONLY(タイムスタンプの相違を無視),FLAG_USE_SUFFIX(旧ファイルを同一階層にバックアップ)の機能追加
 """
 
 # ==========================================
 # 設定: グローバル変数
 # ==========================================
-BACKUP_SOURCE_DIR: str = "/home/vm/workspace/_test_rsync_202604/src/"
-BACKUP_DESTINATION_DIR: str = "/home/vm/workspace/_test_rsync_202604/dst/"
-
+# コピー元, コピー先 ディレクトリ (初期値はダミー値)
+BACKUP_SOURCE_DIR: str = "/tmp/test/src/"
+BACKUP_DESTINATION_DIR: str = "/tmp/test/dst/"
+# 除外サイズ(このサイズ以上のファイルは対象外。rsyncの--max-sizeに対応)
 EXCLUDE_FILESIZE_MB: int = 10
+# 除外拡張子(カンマ区切りで複数指定可。rsyncの--excludeスイッチに対応)
 EXCLUDE_FILE_EXTENSION: str = "bak,tmp"
-
+# デバッグ用に表示を遅くする
 FLAG_DEBUG_WAIT: bool = True
+# ファイルの転送条件はファイルサイズのみ(日時などは判定対象外。rsyncの--size-onlyスイッチに対応)
+FLAG_SIZE_ONLY: bool = False
+# ファイルが上書きされる前に同一階層にバックアップを行う(rsyncの--backup --suffix=#####に対応)
+FLAG_USE_SUFFIX: bool = False
+# 同一階層に作られるバックアップファイルの命名規則
+BACKUP_SUFFIX_STR: str = "_bak%Y%m%d"
+# ファイルの転送条件はチェックサム(rsyncの--checksumに対応)
+FLAG_CHECKSUM: bool = False
 
 # ==========================================
 # JSON設定ファイルの読み込み処理 (Ver3.0 新規追加)
@@ -56,6 +67,39 @@ FLAG_DEBUG_WAIT: bool = True
 CONFIG_FILE_NAME = ".rsync_backup_python.json"
 # ユーザーのホームディレクトリのパスを取得
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), CONFIG_FILE_NAME)
+
+
+def _get_itemize_legend(cmd_str: str) -> str:
+    """プレビューおよび結果ログの先頭に付与する、共通のコマンド表記と凡例テキストを生成します。
+
+    Args:
+        cmd_str (str): 画面に表示・コピペ用として結合されたrsyncのフルコマンド文字列。
+
+    Returns:
+        str: コマンド情報と、各カラムの記号の意味を日本語化した凡例ブロックのテキスト。
+    """
+    return (
+        f"■ 実行したrsyncコマンド (端末コピペ用):\n"
+        f"{cmd_str}\n"
+        f"======================================================================\n\n"
+        "※itemize-changes凡例\n"
+        "==============\n"
+        "【左端1文字目: 動向】\n"
+        "  > : ファイルを転送先へコピー (追加または上書き)\n"
+        "  c : 転送先にディレクトリ等を新規作成\n"
+        "  . : 変更（転送）なし\n"
+        "【左端2文字目: 種類】\n"
+        "  f : 通常のファイル\n"
+        "  d : ディレクトリ\n"
+        "【それ以降の文字: 変更理由（一部抜粋）】\n"
+        "  + : 新規ファイル（初回転送）\n"
+        "  s : ファイルサイズが異なる\n"
+        "  t : タイムスタンプ（更新時刻）が異なる\n"
+        "  c : チェックサムが異なる(--checksumスイッチ指定の場合のみ)\n"
+        "  p : 属性（permission）が異なる\n"
+        "  . : 変更なし\n"
+        "======================================================================\n\n"
+    )
 
 
 def validate_and_sanitize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
@@ -76,6 +120,7 @@ def validate_and_sanitize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
 
     # --- 1. 必須キーの存在チェック ---
+    # ※過去互換性を維持するため、新フラグ(FLAG_SIZE_ONLY,FLAG_USE_SUFFIX)は必須項目から外し、下部で安全に取得します
     required_keys = [
         "BACKUP_SOURCE_DIR",
         "BACKUP_DESTINATION_DIR",
@@ -114,7 +159,6 @@ def validate_and_sanitize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     sanitized["BACKUP_SOURCE_DIR"] = src
     sanitized["BACKUP_DESTINATION_DIR"] = dst
 
-
     # 拡張子の文字制限（半角英数字とカンマのみを許容。それ以外は除去して無毒化）
     # 悪意ある記号（*; $() など）をここで完全に削ぎ落とします
     ext_list = [e.strip() for e in ext.split(",")]
@@ -142,6 +186,10 @@ def validate_and_sanitize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     # --- 4. ブーリアン項目のサニタイズ（型強制） ---
     # 文字列の "True" や "False"、数値の 1 や 0 が入ってきても厳密に bool 型に変換
     sanitized["FLAG_DEBUG_WAIT"] = bool(raw_config["FLAG_DEBUG_WAIT"])
+    # 【新機能】JSONにキーが無ければデフォルト（False）を適用し、あれば厳密にbool化
+    sanitized["FLAG_SIZE_ONLY"] = bool(raw_config.get("FLAG_SIZE_ONLY", False))
+    sanitized["FLAG_USE_SUFFIX"] = bool(raw_config.get("FLAG_USE_SUFFIX", False))
+    sanitized["FLAG_CHECKSUM"] = bool(raw_config.get("FLAG_CHECKSUM", False))
 
     return sanitized
 
@@ -156,6 +204,7 @@ def load_config_json() -> bool:
               JSONファイルが存在しない場合、または読み込み・作成に失敗した場合は False。
     """
     global BACKUP_SOURCE_DIR, BACKUP_DESTINATION_DIR, EXCLUDE_FILESIZE_MB, EXCLUDE_FILE_EXTENSION, FLAG_DEBUG_WAIT
+    global FLAG_SIZE_ONLY, FLAG_USE_SUFFIX, FLAG_CHECKSUM  # 【新機能 追加分】
 
     if os.path.exists(CONFIG_PATH):
         try:
@@ -175,6 +224,10 @@ def load_config_json() -> bool:
                 "EXCLUDE_FILE_EXTENSION", EXCLUDE_FILE_EXTENSION
             )
             FLAG_DEBUG_WAIT = config_data.get("FLAG_DEBUG_WAIT", FLAG_DEBUG_WAIT)
+            FLAG_SIZE_ONLY = config_data.get("FLAG_SIZE_ONLY", FLAG_SIZE_ONLY)
+            FLAG_USE_SUFFIX = config_data.get("FLAG_USE_SUFFIX", FLAG_USE_SUFFIX)
+            FLAG_CHECKSUM = config_data.get("FLAG_CHECKSUM", FLAG_CHECKSUM)
+
             print(f"[INFO] 設定をロードしました: {CONFIG_PATH}")
             return True
 
@@ -225,7 +278,13 @@ def load_config_json() -> bool:
 
 
 def _show_init_error_dialog(title: str, message: str, icon: str = "error") -> None:
-    """Tkinter初期化前に安全にメッセージボックスを表示するためのヘルパー関数。"""
+    """Tkinter初期化前に安全にメッセージボックスを表示するためのヘルパー関数。
+
+    Args:
+        title (str): ダイアログボックスのタイトルバーに表示する文字列。
+        message (str): ダイアログ内に表示する具体的なエラー内容や案内メッセージ。
+        icon (str, optional): アイコンの種類（"error" または "info"）。デフォルトは "error"。
+    """
     temp_root = tk.Tk()
     temp_root.withdraw()  # メインウィンドウを非表示にする
     if icon == "error":
@@ -411,6 +470,9 @@ class BackupApp:
 
     def start_process(self) -> None:
         """ディレクトリの存在確認を行い、問題なければスキャンを開始する。
+
+        事前チェック（check_directories）が正常に通過した場合のみ、
+        次のステップである事前ドライランスキャン（prepare_backup）を呼び出します。
         """
         if self.check_directories():
             self.prepare_backup()
@@ -441,18 +503,46 @@ class BackupApp:
 
     def prepare_backup(self) -> None:
         """rsyncのドライラン(-avhin)を実行して対象ファイル数を集計し、ユーザーに開始確認を求める。
-        """
 
+        内部でrsyncプロセスを同期実行してログを解析し、転送対象ファイル数が0件の場合は
+        メッセージを表示して即時終了します。1件以上ある場合は、コピペ用コマンドと
+        日本語凡例を内包したプレビュー画面（PreviewDialog）をポップアップ表示します。
+
+        Raises:
+            subprocess.CalledProcessError: rsyncのドライランプロセスが異常終了した場合。
+            Exception: パス解析やダイアログ生成などで予期せぬエラーが発生した場合。
+        """
         self.label.config(text="バックアップ対象をスキャン中...")
 
         exclude_exts: List[str] = [ext.strip() for ext in EXCLUDE_FILE_EXTENSION.split(',')]
         exclude_args: List[str] = [f"--exclude=*.{ext}" for ext in exclude_exts]
 
+        # 動的な追加スイッチの組み立て (FLAG_SIZE_ONLY, FLAG_USE_SUFFIX)
+        extra_args: List[str] = []
+
+        # 1. サイズ基準オプション
+        if FLAG_SIZE_ONLY:
+            extra_args.append("--size-only")
+
+        # 2. 安全な退避オプション（現在時刻を展開して結合）
+        if FLAG_USE_SUFFIX:
+            # 実行時点の日付文字列（例: _bak20260624）を安全に生成
+            import datetime
+            suffix_resolved = datetime.datetime.now().strftime(BACKUP_SUFFIX_STR)
+            extra_args.append("--backup")
+            extra_args.append(f"--suffix={suffix_resolved}")
+
+        # 3. 【新規】チェックサム比較オプション
+        if FLAG_CHECKSUM:
+            extra_args.append("--checksum")
+
+        # 基本コマンドリストに動的引数をマージ
         # -i (--itemize-changes) を追加して、転送された項目を判別できるようにする
         cmd: List[str] = [
             "rsync", "-avhin",
             f"--max-size={EXCLUDE_FILESIZE_MB}m",
             *exclude_args,
+            *extra_args,
             BACKUP_SOURCE_DIR.rstrip('/') + '/',
             BACKUP_DESTINATION_DIR.rstrip('/') + '/'
         ]
@@ -473,12 +563,16 @@ class BackupApp:
                 f"コピー先: {BACKUP_DESTINATION_DIR}"
             )
 
+            # --- 実行コマンドの文字列とitemize-changes凡例のテキストを生成し、仕切り線とともに出力結果の先頭に結合 ---
+            cmd_str = " ".join(cmd)
+            preview_content = _get_itemize_legend(cmd_str) + result.stdout
+
             # カスタムダイアログの表示（プレビュー機能）
             dialog = PreviewDialog(
                 self.root,
                 "バックアップの開始確認とプレビュー",
                 confirm_msg,
-                result.stdout,  # ドライランの結果を渡す
+                preview_content,  # 実行コマンド文字列 + 仕切り線 + ドライラン結果文字列
                 show_start_button=True
             )
 
@@ -504,17 +598,39 @@ class BackupApp:
         exclude_exts: List[str] = [ext.strip() for ext in EXCLUDE_FILE_EXTENSION.split(',')]
         exclude_args: List[str] = [f"--exclude=*.{ext}" for ext in exclude_exts]
 
+        # 動的な追加スイッチの組み立て (FLAG_SIZE_ONLY, FLAG_USE_SUFFIX)
+        extra_args: List[str] = []
+
+        # 1. サイズ基準オプション
+        if FLAG_SIZE_ONLY:
+            extra_args.append("--size-only")
+
+        # 2. 安全な退避オプション（現在時刻を展開して結合）
+        if FLAG_USE_SUFFIX:
+            # 実行時点の日付文字列（例: _bak20260624）を安全に生成
+            import datetime
+            suffix_resolved = datetime.datetime.now().strftime(BACKUP_SUFFIX_STR)
+            extra_args.append("--backup")
+            extra_args.append(f"--suffix={suffix_resolved}")
+
+        # 3. 【新規】チェックサム比較オプション
+        if FLAG_CHECKSUM:
+            extra_args.append("--checksum")
+
+        # 基本コマンドリストに動的引数をマージ
         # -i (--itemize-changes) を追加して、転送された項目を判別できるようにする
         cmd: List[str] = [
             "rsync", "-avhi",
             f"--max-size={EXCLUDE_FILESIZE_MB}m",
             *exclude_args,
+            *extra_args,
             BACKUP_SOURCE_DIR.rstrip('/') + '/',
             BACKUP_DESTINATION_DIR.rstrip('/') + '/'
         ]
 
         completed_count: int = 0
         self.full_log = ""  # ログを初期化
+        cmd_str = " ".join(cmd)  # 処理後のダイアログ表示で使うコマンド文字列
 
         try:
             os.makedirs(BACKUP_DESTINATION_DIR, exist_ok=True)
@@ -558,16 +674,20 @@ class BackupApp:
             self.process.wait()
 
             if self.is_running:
+                # --- 実行コマンドの文字列とitemize-changes凡例のテキストを生成し、仕切り線とともに出力結果の先頭に結合 ---
+                formatted_log = _get_itemize_legend(cmd_str) + self.full_log
+
                 if self.process.returncode == 0:
                     self.root.after(0, self.update_progress, 100)
                     success_msg = f"正常に完了しました。\n(バックアップ対象ファイル数: {target_files} 件)"
-                    self.root.after(0, self.show_final_log, "バックアップ完了", success_msg)
+                    self.root.after(0, self.show_final_log, "バックアップ完了", success_msg, formatted_log)
                 else:
                     self.root.after(
                         0,
                         self.show_final_log,
                         "エラー",
-                        f"rsyncエラーが発生しました。(Code: {self.process.returncode})")
+                        f"rsyncエラーが発生しました。(Code: {self.process.returncode})",
+                        formatted_log)
 
         except Exception as e:
             self.root.after(0, self.finish_backup, "エラー", f"致命的なエラー: {str(e)}")
@@ -583,6 +703,9 @@ class BackupApp:
 
     def stop_backup(self) -> None:
         """バックアップ処理を中断し、アプリケーションを終了する。
+
+        ユーザーに確認ダイアログを表示し、「はい」が選択された場合は
+        実行中のrsyncサブプロセスを強制終了（terminate）した上で、GUIウィンドウを破棄します。
         """
 
         if messagebox.askyesno("中断確認", "バックアップを中断して終了しますか？"):
@@ -591,12 +714,29 @@ class BackupApp:
                 self.process.terminate()
             self.root.destroy()
 
-    def show_final_log(self, title: str, message: str) -> None:
-        """完了後にログを閲覧できるウィンドウを表示する。"""
-        PreviewDialog(self.root, title, message, self.full_log, show_start_button=False)
+    def show_final_log(self, title: str, message: str, formatted_log: str) -> None:
+        """完了後にログを閲覧できるウィンドウを表示する。
+
+        バックアップ処理終了後に、結果概要メッセージとともに、実際に実行したコマンド、
+        および日本語凡例が先頭に付与された成形済みのログを閲覧用ダイアログに渡して表示します。
+
+        Args:
+            title (str): ログ閲覧ダイアログのタイトル（「バックアップ完了」や「エラー」など）。
+            message (str): ダイアログ上部に表示する、処理結果のサマリーメッセージ。
+            formatted_log (str): コマンド・凡例ヘッダーと、rsyncの標準出力が結合された全ログ文字列。
+        """
+
+        PreviewDialog(self.root, title, message, formatted_log, show_start_button=False)
         self.root.destroy()
 
     def finish_backup(self, title: str, message: str) -> None:
+        """エラーや例外の発生時に、ユーザーへメッセージを表示してアプリケーションを安全に終了する。
+
+        Args:
+            title (str): メッセージボックスのタイトル。
+            message (str): メッセージボックスに表示するエラーや異常終了の具体的な詳細内容。
+        """
+
         messagebox.showinfo(title, message)
         self.root.destroy()
 
