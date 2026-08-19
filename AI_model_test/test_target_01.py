@@ -1,69 +1,91 @@
-import sys
+import math
 
+def is_prime(n: int) -> bool:
+    # 1以下の数は素数ではない
+    if n <= 1:
+        return False
+    
+    # 2は素数
+    if n == 2:
+        return True
+    
+    # 偶数は2以外は素数ではない
+    if n % 2 == 0:
+        return False
 
-def print_hello_10times() -> None:
+    # 3から平方根までの奇数について割り切れるかチェックする
+    # 2の倍数をスキップし、効率を向上させる
+    for i in range(3, int(math.sqrt(n)) + 1, 2):
+        if n % i == 0:
+            return False
+            
+    # 割り切れる数がなければ素数である
+    return True
+
+def find_primes_in_range(start: int, end: int) -> list[int]:
     """
-    Summary in Japanese: この関数は10回「Hello」と「Hello 2」を順番に表示します。
+    指定された範囲内にあるすべての素数をリストとして抽出する。
 
     Args:
-        None.
+        start (int): 検索を開始する下限値（含む）。
+        end (int): 検索を終了する上限値（含む）。
 
     Returns:
-        None.
+        list[int]: startからendまでの範囲に含まれる素数のリスト。
     """
+    prime_numbers: list[int] = []
+    # startからendまでのすべての数について素数判定を行う
+    for number in range(start, end + 1):
+        if is_prime(number):
+            prime_numbers.append(number)
+    return prime_numbers
 
-    
-    
-    
-    
-
-    for _ in range(10):
-        print("Hello")
-
-    for _ in range(10):
-        print("Hello 2")
-
-    
-    
-
-def get_user_input() -> str:
+def main():
     """
-    ユーザーからの入力を取得する関数です。
-    Returns:
-        str: 入力されたテキスト。
+    ユーザーからの入力を受け取り、素数を検索して表示するメイン処理。
     """
-    try:
+    print("--- 素数検索プログラム ---")
     
-        return input("Enter some text: ")
-    except (KeyboardInterrupt, EOFError):
-        sys.exit(0)
+    while True:
+        try:
+            # ユーザーから開始値と終了値を入力してもらう
+            start_input = input("素数を検索したい範囲の開始値を入力してください (例: 1): ")
+            end_input = input("素数を検索したい範囲の終了値を入力してください (例: 100): ")
+            
+            start = int(start_input)
+            end = int(end_input)
+            
+            if start > end:
+                print("エラー: 開始値は終了値以下である必要があります。再度入力してください。")
+                continue
 
+            if start < 0:
+                 print("エラー: 範囲は0以上の整数で指定してください。")
+                 continue
 
-def process_text(text: str) -> str:
-    """
-    テキストを処理する関数です。
+            # 素数を検索
+            primes = find_primes_in_range(start, end)
 
-    Args:
-        text (str): 処理対象のテキスト。
+            # 結果の表示
+            if primes:
+                print(f"\n【結果】{start} から {end} までの素数:")
+                # リストをスペース区切りで表示
+                print(*(primes))
+            else:
+                print(f"\n【結果】{start} から {end} の範囲には素数が見つかりませんでした。")
 
-    Returns:
-        str: 処理後のテキスト。
-    """
-    cleaned = text.strip()
-    return f"PROCESSED: {cleaned.upper()}"
+            # ユーザーに再実行するか尋ねる
+            another = input("\n再度検索を実行しますか？ (y/n): ").lower()
+            if another != 'y':
+                break
 
-
-def main() -> None:
-    """
-    メイン関数です。ユーザーからの入力を取得し、処理した結果を出力します。
-
-    Returns:
-        None
-    """
-    raw_data = get_user_input()
-    result = process_text(raw_data)
-    print(result)
-
+        except ValueError:
+            # 数値以外の入力があった場合の処理
+            print("\n入力エラー: 有効な整数を入力してください。")
+        except Exception as e:
+            # その他の予期せぬエラー処理
+            print(f"\n予期せぬエラーが発生しました: {e}")
+            break
 
 if __name__ == "__main__":
     main()

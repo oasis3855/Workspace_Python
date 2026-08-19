@@ -1,27 +1,163 @@
-<html>
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>素数計算プログラム</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 600px;
+            margin: 40px auto;
+            padding: 0 20px;
+            line-height: 1.6;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: inline-block;
+            width: 80px;
+        }
+        input {
+            padding: 8px;
+            font-size: 16px;
+            width: 120px;
+        }
+        button {
+            padding: 8px 16px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+            word-wrap: break-word;
+        }
+        .error {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>指定範囲の素数表示</h1>
+
+    <!-- 1. ユーザー入力フォームの作成 -->
+    <div class="input-group">
+        <label for="startNum">開始数:</label>
+        <input type="number" id="startNum" value="1">
+    </div>
+    <div class="input-group">
+        <label for="endNum">終了数:</label>
+        <input type="number" id="endNum" value="100">
+    </div>
+    <button id="calcBtn">素数を検索</button>
+
+    <!-- 2. 結果表示エリア -->
+    <div id="result">数値を入力して「素数を検索」ボタンを押してください。</div>
+
     <script>
         /**
-         * find_prime_number() - This function finds the first prime number greater than a given number n.
+         * 指定された数値が素数かどうかを判定する関数
          *
-         * @param {number} n - The number to start searching for the next prime from.
-         * @return {number} - The first prime number greater than n.
+         * @param {number} num - 判定対象の数値
+         * @returns {boolean} 素数であればtrue、そうでなければfalse
          */
-        function find_prime_number(n) {
-            var input_number = document.getElementById("input_number").value;
-            for (var i = 2; i <= input_number; i++) {
-                if (isPrime(i)) {
-                    console.log(i);
-                }
-            }
-        }
-        function isPrime(number) {
-            for (var i = 2; i < number; i++) {
-                if (number % i == 0) {
+        function isPrime(num) {
+            // 1以下の数は素数ではない
+            if (num <= 1) return false;
+            
+            // 2は素数
+            if (num === 2) return true;
+            
+            // 偶数は素数ではない (2を除く)
+            if (num % 2 === 0) return false;
+
+            // 3以降の奇数で割り切れるか検証（ルートnumまでループすれば十分）
+            const sqrt = Math.sqrt(num);
+            for (let i = 3; i <= sqrt; i += 2) {
+                if (num % i === 0) {
                     return false;
                 }
             }
+
             return true;
         }
-        
+
+        /**
+         * 指定された範囲（minからmaxまで）に含まれる素数の配列を取得する関数
+         *
+         * @param {number} min - 範囲の開始値
+         * @param {number} max - 範囲の終了値
+         * @returns {number[]} 範囲内の素数を格納した配列
+         */
+        function getPrimesInRange(min, max) {
+            const primes = [];
+
+            // minからmaxまでの各数値について素数判定を行う
+            for (let i = min; i <= max; i++) {
+                if (isPrime(i)) {
+                    primes.push(i);
+                }
+            }
+
+            return primes;
+        }
+
+        /**
+         * 画面からの入力を受け取り、処理を実行して結果を描画するメイン処理
+         *
+         * @returns {void}
+         */
+        function handleCalculate() {
+            // --- 段階1: HTML要素の取得 ---
+            const startInput = document.getElementById('startNum');
+            const endInput = document.getElementById('endNum');
+            const resultDiv = document.getElementById('result');
+
+            // --- 段階2: 入力値の取得と数値化 ---
+            const startVal = parseInt(startInput.value, 10);
+            const endVal = parseInt(endInput.value, 10);
+
+            // --- 段階3: 入力値のバリデーション（妥当性検証） ---
+            if (isNaN(startVal) || isNaN(endVal)) {
+                resultDiv.innerHTML = '<span class="error">有効な整数を入力してください。</span>';
+                return;
+            }
+
+            // 開始数と終了数の大小関係を補正する
+            const min = Math.min(startVal, endVal);
+            const max = Math.max(startVal, endVal);
+
+            // --- 段階4: 素数計算の実行 ---
+            const primes = getPrimesInRange(min, max);
+
+            // --- 段階5: 結果の画面表示 ---
+            if (primes.length === 0) {
+                resultDiv.textContent = `${min} から ${max} の間に素数は見つかりませんでした。`;
+            } else {
+                resultDiv.innerHTML = `
+                    <p><strong>${min} から ${max} の間にある素数 (計 ${primes.length} 個):</strong></p>
+                    <p>${primes.join(', ')}</p>
+                `;
+            }
+        }
+
+        // --- 段階6: イベントリスナーの設定 ---
+        // ボタンのクリック時に計算処理を実行するように登録
+        document.getElementById('calcBtn').addEventListener('click', handleCalculate);
     </script>
+
+</body>
 </html>
