@@ -21,7 +21,8 @@ Author:
     Google Gemini3.6 Flash Collaborating Coding
 
 Version:
-    1.0.0 (2026/08/16)
+    1.0.0 (2026/08/16) 
+    1.1.0 (2026/08/21) キー重複時の Software 値変更検知・DB更新スキップ判定を追加
 """
 
 import json
@@ -42,8 +43,7 @@ JSON_DATABASE_FULL_PATH: str = os.path.join(
 
 
 def load_json_database(database_file_path: str) -> Dict[str, Optional[str]]:
-    """
-    JSON データベースファイルを読み込みます。ファイルが存在しない場合は空の辞書を返します。
+    """JSON データベースファイルを読み込みます。ファイルが存在しない場合は空の辞書を返します。
 
     Args:
         database_file_path (str): 読み込む JSON ファイルのフルパス
@@ -66,8 +66,7 @@ def load_json_database(database_file_path: str) -> Dict[str, Optional[str]]:
 def save_json_database(
     database_data: Dict[str, Optional[str]], database_file_path: str
 ) -> bool:
-    """
-    データベース辞書を JSON ファイルとして保存します。
+    """データベース辞書を JSON ファイルとして保存します。
 
     Args:
         database_data (Dict[str, Optional[str]]): 保存するデータベース辞書
@@ -92,8 +91,7 @@ def save_json_database(
 def find_tag_id_and_ifd_from_image(
     image_path: str, tag_name_query: str
 ) -> Tuple[Optional[int], Optional[str]]:
-    """
-    対象画像ファイルの既存 Exif データを走査し、指定されたタグ名が存在する タグID と IFD 領域を特定します。
+    """対象画像ファイルの既存 Exif データを走査し、指定されたタグ名が存在する タグID と IFD 領域を特定します。
 
     Args:
         image_path (str): 対象画像ファイルのパス
@@ -118,7 +116,10 @@ def find_tag_id_and_ifd_from_image(
                 exif_sub_ifd = exif_data.get_ifd(ExifTags.IFD.Exif)
                 if exif_sub_ifd:
                     for tag_id, registered_name in ExifTags.TAGS.items():
-                        if registered_name == tag_name_query and tag_id in exif_sub_ifd.keys():
+                        if (
+                            registered_name == tag_name_query
+                            and tag_id in exif_sub_ifd.keys()
+                        ):
                             return tag_id, "ExifIFD"
             except Exception:
                 pass
@@ -128,7 +129,10 @@ def find_tag_id_and_ifd_from_image(
                 gps_ifd = exif_data.get_ifd(ExifTags.IFD.GPSInfo)
                 if gps_ifd:
                     for tag_id, registered_name in ExifTags.GPSTAGS.items():
-                        if registered_name == tag_name_query and tag_id in gps_ifd.keys():
+                        if (
+                            registered_name == tag_name_query
+                            and tag_id in gps_ifd.keys()
+                        ):
                             return tag_id, "GPSInfo"
             except Exception:
                 pass
@@ -140,8 +144,7 @@ def find_tag_id_and_ifd_from_image(
 
 
 def get_exif_tag_value_by_name(image_path: str, tag_name: str) -> Optional[str]:
-    """
-    画像内から指定されたタグ名の値を文字列として安全に取得します。
+    """画像内から指定されたタグ名の値を文字列として安全に取得します。
 
     Args:
         image_path (str): 対象画像ファイルのパス
@@ -176,17 +179,17 @@ def get_exif_tag_value_by_name(image_path: str, tag_name: str) -> Optional[str]:
 def register_original_software_database(
     image_path: str, database_file_path: str
 ) -> bool:
-    """
-    Gimpで書き換えられていないオリジナルの JPG ファイルから「Make」「Model」「Software」を取得し、
+    """Gimpで書き換えられていないオリジナルの JPG ファイルから「Make」「Model」「Software」を取得し、
+
     「Make|Model」をキーとして JSON データベースに登録・保存します。
-    ※ Software タグが無い場合は None（JSON上は null）として登録します。
+    既にデータが存在する場合、Software 値が一致していれば更新をスキップし、異なる場合のみアップデートします。
 
     Args:
         image_path (str): オリジナル画像のファイルパス
         database_file_path (str): JSON データベースのファイルパス
 
     Returns:
-        bool: 登録成功時 True, 失敗時 False
+        bool: 登録/更新成功時および同一内容でスキップ時 True, エラー発生時 False
     """
     # ── [ステップ1] 各属性値の取得 ──
     make_value = get_exif_tag_value_by_name(image_path, "Make")
@@ -194,7 +197,9 @@ def register_original_software_database(
     raw_software_value = get_exif_tag_value_by_name(image_path, "Software")
 
     if not make_value or not model_value:
-        print("エラー: 画像内に Make または Model の情報が存在しません。DB登録をスキップします。")
+        print(
+            "エラー: 画像内に Make または Model の情報が存在しません。DB登録をスキップします。"
+        )
         return False
 
     make_clean_value = make_value.strip()
@@ -205,31 +210,56 @@ def register_original_software_database(
         raw_software_value.strip() if raw_software_value is not None else None
     )
 
-    # ── [ステップ2] JSON データベースへの登録と保存 ──
+    # ── [ステップ2] JSON データベースとの照合・差異チェック ──
     database_data = load_json_database(database_file_path)
     database_key = f"{make_clean_value}|{model_clean_value}"
+
+    if database_key in database_data:
+        existing_software_value = database_data[database_key]
+
+        # 登録済みの値と新規の値が完全に一致する場合は処理を行わず終了
+        if existing_software_value == software_clean_value:
+            display_val = (
+                f"'{software_clean_value}'" if software_clean_value else "なし (null)"
+            )
+            print(f"[データベーススキップ]")
+            print(f"  ・キー      : '{database_key}'")
+            print(
+                f"  ・Software  : {display_val} (既存データと同一のため更新を行いません)"
+            )
+            return True
+
+        # 値が異なる場合はアップデートログを出力
+        old_val_disp = (
+            f"'{existing_software_value}'" if existing_software_value else "なし (null)"
+        )
+        new_val_disp = (
+            f"'{software_clean_value}'" if software_clean_value else "なし (null)"
+        )
+        print(f"[データベースアップデート]")
+        print(f"  ・キー      : '{database_key}'")
+        print(f"  ・Software  : {old_val_disp} -> {new_val_disp}")
+    else:
+        # 新規登録時のログ出力
+        new_val_disp = (
+            f"'{software_clean_value}'" if software_clean_value else "なし (null)"
+        )
+        print(f"[データベース新規登録]")
+        print(f"  ・キー      : '{database_key}'")
+        print(f"  ・Software  : {new_val_disp}")
+
+    # ── [ステップ3] JSON データベースへ保存 ──
     database_data[database_key] = software_clean_value
 
     if save_json_database(database_data, database_file_path):
-        # ── [ステップ3] ログ表示（Python 3.11 以前の f-string 制約に対応） ──
-        if software_clean_value:
-            software_display_string = f"'{software_clean_value}'"
-        else:
-            software_display_string = "なし (null)"
-
-        print(f"[データベース自動登録完了]")
-        print(f"  ・キー    : '{database_key}'")
-        print(f"  ・Software: {software_display_string}")
-        print(f"  ・保存先  : {database_file_path}")
+        print(f"  ・保存先    : {database_file_path}")
         return True
     return False
 
 
-def restore_exif_data_from_gimp(
-    image_path: str, database_file_path: str
-) -> bool:
-    """
-    Gimpで書き換えられた JPG ファイルの Exif（Software, DateTime）を復元して上書き保存します。
+def restore_exif_data_from_gimp(image_path: str, database_file_path: str) -> bool:
+    """Gimpで書き換えられた JPG ファイルの Exif（Software, DateTime）を復元して上書き保存します。
+
     ※ 元の Software が「なし (null)」の場合は Software タグ自体を削除します。
 
     Args:
@@ -252,7 +282,9 @@ def restore_exif_data_from_gimp(
 
     if database_key not in database_data:
         print(f"エラー: データベースにキー '{database_key}' が未登録です。")
-        print("先にこのカメラ（Make/Model）で撮影されたオリジナル画像を通してください。")
+        print(
+            "先にこのカメラ（Make/Model）で撮影されたオリジナル画像を通してください。"
+        )
         return False
 
     restored_software_value = database_data[database_key]
@@ -267,7 +299,9 @@ def restore_exif_data_from_gimp(
         )
 
     if not original_date_time_value:
-        print("エラー: DateTimeOriginal および DateTimeDigitized を取得できませんでした。")
+        print(
+            "エラー: DateTimeOriginal および DateTimeDigitized を取得できませんでした。"
+        )
         return False
 
     # ── [ステップ3] タグ ID の特定と書き換え・削除処理 ──
@@ -317,7 +351,9 @@ def restore_exif_data_from_gimp(
 
             print(f"[Exif復元完了] {image_path}")
             print(f"  ・Software : '{old_software_value}' -> {restored_software_disp}")
-            print(f"  ・DateTime : '{old_date_time_value}' -> '{original_date_time_value}'")
+            print(
+                f"  ・DateTime : '{old_date_time_value}' -> '{original_date_time_value}'"
+            )
             return True
 
     except Exception as error_message:
@@ -325,11 +361,9 @@ def restore_exif_data_from_gimp(
         return False
 
 
-def process_image_file_automatically(
-    image_path: str, database_file_path: str
-) -> bool:
-    """
-    Software タグの値を検査し、Gimp 文字列が含まれるかに応じて
+def process_image_file_automatically(image_path: str, database_file_path: str) -> bool:
+    """Software タグの値を検査し、Gimp 文字列が含まれるかに応じて
+
     『DB登録』か『Exif復元』かを自動判定して実行します。
 
     Args:
@@ -346,16 +380,19 @@ def process_image_file_automatically(
 
     # ── [ステップ2] Gimp 書き換え判定と処理の自動分岐 ──
     if software_value and "gimp" in software_value.lower():
-        print("判定結果: Gimp による書き換えを検知しました -> 【復元モード】を実行します")
+        print(
+            "判定結果: Gimp による書き換えを検知しました -> 【復元モード】を実行します"
+        )
         return restore_exif_data_from_gimp(image_path, database_file_path)
     else:
-        print("判定結果: オリジナル画像（Gimp未検知）です -> 【DB自動登録モード】を実行します")
+        print(
+            "判定結果: オリジナル画像（Gimp未検知）です -> 【DB自動登録モード】を実行します"
+        )
         return register_original_software_database(image_path, database_file_path)
 
 
 def main() -> None:
-    """
-    メイン処理を実行します。
+    """メイン処理を実行します。
 
     Returns:
         None
