@@ -6,7 +6,7 @@
 このモジュールは、watchdog ライブラリを使用してユーザーがGUIで指定したディレクトリを監視し、
 対象画像（.jpg, .jpeg）のイベントを検知した際に動的にロードした外部スクリプト（05_exif_restore_from_gimp.py）の
 自動処理関数を呼び出してExif復元またはDB登録を実行します。
-処理内容やログ出力はすべて tkinter の ScrolledText ウィジェットにリアルタイム表示されます。
+また、ユーザーがダイアログで指定したディレクトリ内の全既存画像ファイルに対する一括処理機能も提供します。
 
 Attributes:
     RESTORE_SCRIPT_NAME (str): 呼び出すExif復元スクリプト名（デフォルト: 05_exif_restore_from_gimp.py）。
@@ -23,21 +23,24 @@ Requires:
     - 05_exif_restore_from_gimp.py: 同一ディレクトリ内に配置されている必要のあるExif復元処理スクリプト
 
 Author:
-    Google Gemini3.6 Flash Collaborating Coding
+    Google Gemini Collaborative Coding
 
 Version:
     1.0.0 (2026/08/19) (06_main_watch_and_restore.py としてテキスト版 最初の実装)
     2.0.0 (2026/08/21) tkinter GUI化
+    2.1.0 (2026/08/22) 指定ディレクトリ内全ファイルの一括自動処理ボタン機能を追加
+    2.2.0 (2026/08/22) 一括処理時のフォルダ選択ダイアログ追加および自動監視停止・再開制御の実装
 """
 
 import importlib.util
 import os
 import sys
-import time
 import threading
+import time
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext
-from typing import Any, Dict, Set, Optional
+from tkinter import filedialog, scrolledtext, ttk
+from typing import Any, Dict, Optional, Set
+
 from watchdog.events import (
     FileCreatedEvent,
     FileModifiedEvent,
@@ -76,7 +79,7 @@ def load_exif_restore_module(script_name: str) -> Any:
         script_name (str): 読み込む Python スクリプトのファイル名
 
     Returns:
-        Any: インポートされたモジュールオブジェクト
+        Any: インポートされたモジュールオブジェクト（失敗時は None）
     """
     # ── [ステップ1] 実行中スクリプトと同階層のフルパスを構築 ──
     current_directory = os.path.dirname(os.path.abspath(__file__))
@@ -265,10 +268,11 @@ class MainWatchAndRestoreApp(tk.Tk):
 
         # ── [ステップ1] ウィンドウ基本設定 ──
         self.title("GIMP Exif 自動復元・ディレクトリ監視ツール (GUI版)")
-        self.geometry("800x550")
+        self.geometry("820x580")
 
         self.observer_instance: Optional[Observer] = None
         self.is_monitoring: bool = False
+        self.is_batch_processing: bool = False
 
         # ── [ステップ2] UI レイアウトの生成 ──
         directory_frame = ttk.Frame(self)
@@ -306,7 +310,15 @@ class MainWatchAndRestoreApp(tk.Tk):
             command=self.stop_monitoring,
             state=tk.DISABLED,
         )
-        self.stop_button.pack(side=tk.LEFT)
+        self.stop_button.pack(side=tk.LEFT, padx=(0, 5))
+
+        # 一括処理用のボタン
+        self.batch_process_button = ttk.Button(
+            button_frame,
+            text="指定ディレクトリ内の全ファイルを処理",
+            command=self.execute_batch_processing,
+        )
+        self.batch_process_button.pack(side=tk.LEFT)
 
         # ログ表示用 ScrolledText ウィジェット
         self.log_text_widget = scrolledtext.ScrolledText(
@@ -372,6 +384,121 @@ class MainWatchAndRestoreApp(tk.Tk):
             self.stop_button.config(state=tk.DISABLED)
 
             print("監視を停止しました。")
+
+    def execute_batch_processing(self) -> None:
+        """一括処理用ディレクトリを選択させ、監視一時停止およびバックグラウンド一括処理を開始します。"""
+        if self.is_batch_processing:
+            print("[警告]: 現在一括処理が既に実行中です。完了までお待ちください。")
+            return
+
+        # ── [ステップ1] ダイアログによる一括処理対象フォルダの選択 ──
+        selected_batch_directory = filedialog.askdirectory(
+            title="一括処理を行うディレクトリを選択してください",
+            initialdir=self.directory_path_variable.get(),
+        )
+
+        if not selected_batch_directory:
+            print("一括処理がキャンセルされました。")
+            return
+
+        target_directory_path = os.path.abspath(selected_batch_directory)
+        if not os.path.exists(target_directory_path):
+            print(
+                f"[エラー]: 選択されたディレクトリが存在しません -> {target_directory_path}"
+            )
+            return
+
+        # ── [ステップ2] 監視状態の確認と一時停止 ──
+        was_monitoring_active = self.is_monitoring
+        if was_monitoring_active:
+            print("\n一括処理実行に伴い、ディレクトリの自動監視を一時停止します...")
+            self.stop_monitoring()
+
+        # ── [ステップ3] 別スレッドで一括処理を実行 ──
+        worker_thread = threading.Thread(
+            target=self._process_all_files_in_directory,
+            args=(target_directory_path, was_monitoring_active),
+            daemon=True,
+        )
+        worker_thread.start()
+
+    def _process_all_files_in_directory(
+        self, target_directory_path: str, should_resume_monitoring: bool
+    ) -> None:
+        """指定ディレクトリ内の全jpg/jpegファイルを探索し順次処理を行う内部メソッド（別スレッド実行用）。
+
+        Args:
+            target_directory_path (str): 処理対象のディレクトリパス
+            should_resume_monitoring (bool): 一括処理完了後に自動監視を再開するかどうか
+        """
+        self.is_batch_processing = True
+        self.batch_process_button.config(state=tk.DISABLED)
+
+        try:
+            print("=" * 70)
+            print("一括処理タスクを開始します...")
+            print(f"  ・対象ディレクトリ  : {target_directory_path}")
+
+            # ── [ステップ1] 外部モジュールの動的読み込み ──
+            restore_module = load_exif_restore_module(RESTORE_SCRIPT_NAME)
+
+            if restore_module is None or not hasattr(
+                restore_module, "process_image_file_automatically"
+            ):
+                print(
+                    f"[エラー]: {RESTORE_SCRIPT_NAME} の読み込み、または process_image_file_automatically 関数の呼び出しに失敗しました。"
+                )
+                return
+
+            # ── [ステップ2] 対象ファイルリストの抽出 ──
+            target_file_list = []
+            for file_name in os.listdir(target_directory_path):
+                file_extension = os.path.splitext(file_name)[1].lower()
+                if file_extension in TARGET_FILE_EXTENSIONS:
+                    target_file_list.append(
+                        os.path.join(target_directory_path, file_name)
+                    )
+
+            target_file_list.sort()
+            total_file_count = len(target_file_list)
+
+            print(f"  ・対象ファイル数    : {total_file_count} 件")
+            print("=" * 70)
+
+            if total_file_count == 0:
+                print("処理対象の画像ファイル (.jpg, .jpeg) が見つかりませんでした。")
+                return
+
+            # ── [ステップ3] 各ファイルに対して順次処理を実行 ──
+            success_count = 0
+            for index, file_path in enumerate(target_file_list, start=1):
+                print(f"[{index}/{total_file_count}] 処理中: {file_path}")
+                try:
+                    is_success = restore_module.process_image_file_automatically(
+                        file_path, JSON_DATABASE_FULL_PATH
+                    )
+                    if is_success:
+                        print(f"  └─ [正常完了] 処理成功: {file_path}")
+                        success_count += 1
+                    else:
+                        print(f"  └─ [警告] スキップまたは失敗: {file_path}")
+                except Exception as error_exception:
+                    print(f"  └─ [エラー] 例外が発生しました: {error_exception}")
+
+            print("-" * 70)
+            print(
+                f"一括処理が完了しました (成功: {success_count} / 全 {total_file_count} 件)"
+            )
+            print("-" * 70)
+
+        finally:
+            self.is_batch_processing = False
+            self.batch_process_button.config(state=tk.NORMAL)
+
+            # ── [ステップ4] 以前監視状態だった場合は自動で監視を再開 ──
+            if should_resume_monitoring:
+                print("\n一時停止していた自動監視を再開します...")
+                self.start_monitoring()
 
     def on_close_window(self) -> None:
         """アプリ終了時に監視スレッドを停止させてからウィンドウを閉じます。"""
