@@ -6,7 +6,7 @@
 このモジュールは、watchdog ライブラリを使用してユーザーがGUIで指定したディレクトリを監視し、
 対象画像（.jpg, .jpeg）のイベントを検知した際に動的にロードした外部スクリプト（05_exif_restore_from_gimp.py）の
 自動処理関数を呼び出してExif復元またはDB登録を実行します。
-また、ユーザーがダイアログで指定したディレクトリ内の全既存画像ファイルに対する一括処理機能も提供します。
+また、ユーザーがダイアログで指定したディレクトリ内の全既存画像ファイルに対する一括処理機能および簡易表示切替を提供します。
 
 Attributes:
     RESTORE_SCRIPT_NAME (str): 呼び出すExif復元スクリプト名（デフォルト: 05_exif_restore_from_gimp.py）。
@@ -30,6 +30,7 @@ Version:
     2.0.0 (2026/08/21) tkinter GUI化
     2.1.0 (2026/08/22) 指定ディレクトリ内全ファイルの一括自動処理ボタン機能を追加
     2.2.0 (2026/08/22) 一括処理時のフォルダ選択ダイアログ追加および自動監視停止・再開制御の実装
+    2.3.0 (2026/08/23) 簡易表示（1対象1行表示）のチェックボックス機能を追加
 """
 
 import importlib.util
@@ -139,19 +140,24 @@ class ImageFileEventHandler(FileSystemEventHandler):
     """
 
     def __init__(
-        self, watch_extensions: Set[str], debounce_interval: float = 1.0
+        self,
+        watch_extensions: Set[str],
+        debounce_interval: float = 1.0,
+        is_simple_mode_variable: Optional[tk.BooleanVar] = None,
     ) -> None:
         """イベントハンドラの初期化処理を行います。
 
         Args:
             watch_extensions (Set[str]): 監視対象とする拡張子の集合
             debounce_interval (float): 重複検知を無視する秒数間隔
+            is_simple_mode_variable (Optional[tk.BooleanVar]): 簡易表示設定の BooleanVar オブジェクト
         """
         super().__init__()
         self.watch_extensions: Set[str] = {
             extension.lower() for extension in watch_extensions
         }
         self.debounce_interval: float = debounce_interval
+        self.is_simple_mode_variable: Optional[tk.BooleanVar] = is_simple_mode_variable
 
         # ファイルパスごとの「最終イベント発生時刻」を記録する辞書
         self.last_event_timestamps: Dict[str, float] = {}
@@ -213,7 +219,14 @@ class ImageFileEventHandler(FileSystemEventHandler):
         # ── [ステップ2] 拡張子チェックとデバウンス判定および自動処理の実行 ──
         if self._is_target_file(absolute_path):
             if self._should_process_event(absolute_path):
-                print(f"[{event_type}]: {absolute_path}")
+                is_simple = (
+                    self.is_simple_mode_variable.get()
+                    if self.is_simple_mode_variable
+                    else False
+                )
+
+                if not is_simple:
+                    print(f"[{event_type}]: {absolute_path}")
 
                 if self.restore_module is None:
                     print(
@@ -227,16 +240,17 @@ class ImageFileEventHandler(FileSystemEventHandler):
 
                     # 05_exif_restore_from_gimp.py の自動判定・処理関数を呼び出す
                     is_success = self.restore_module.process_image_file_automatically(
-                        absolute_path, JSON_DATABASE_FULL_PATH
+                        absolute_path, JSON_DATABASE_FULL_PATH, is_simple
                     )
-                    if is_success:
-                        print(
-                            f"  └─ [正常完了] 画像の処理に成功しました: {absolute_path}"
-                        )
-                    else:
-                        print(
-                            f"  └─ [警告] 画像の処理が中断またはスキップされました: {absolute_path}"
-                        )
+                    if not is_simple:
+                        if is_success:
+                            print(
+                                f"  └─ [正常完了] 画像の処理に成功しました: {absolute_path}"
+                            )
+                        else:
+                            print(
+                                f"  └─ [警告] 画像の処理が中断またはスキップされました: {absolute_path}"
+                            )
 
                 except Exception as error_exception:
                     print(
@@ -273,6 +287,9 @@ class MainWatchAndRestoreApp(tk.Tk):
         self.observer_instance: Optional[Observer] = None
         self.is_monitoring: bool = False
         self.is_batch_processing: bool = False
+
+        # 簡易表示フラグ用 BooleanVar
+        self.is_simple_mode_variable = tk.BooleanVar(value=False)
 
         # ── [ステップ2] UI レイアウトの生成 ──
         directory_frame = ttk.Frame(self)
@@ -318,7 +335,15 @@ class MainWatchAndRestoreApp(tk.Tk):
             text="指定ディレクトリ内の全ファイルを処理",
             command=self.execute_batch_processing,
         )
-        self.batch_process_button.pack(side=tk.LEFT)
+        self.batch_process_button.pack(side=tk.LEFT, padx=(0, 15))
+
+        # 簡易表示チェックボックスの配置
+        simple_mode_checkbutton = ttk.Checkbutton(
+            button_frame,
+            text="簡易表示",
+            variable=self.is_simple_mode_variable,
+        )
+        simple_mode_checkbutton.pack(side=tk.LEFT)
 
         # ログ表示用 ScrolledText ウィジェット
         self.log_text_widget = scrolledtext.ScrolledText(
@@ -357,6 +382,7 @@ class MainWatchAndRestoreApp(tk.Tk):
         event_handler = ImageFileEventHandler(
             watch_extensions=TARGET_FILE_EXTENSIONS,
             debounce_interval=DEBOUNCE_INTERVAL_SECONDS,
+            is_simple_mode_variable=self.is_simple_mode_variable,
         )
         self.observer_instance = Observer()
         self.observer_instance.schedule(
@@ -471,17 +497,22 @@ class MainWatchAndRestoreApp(tk.Tk):
 
             # ── [ステップ3] 各ファイルに対して順次処理を実行 ──
             success_count = 0
+            is_simple = self.is_simple_mode_variable.get()
+
             for index, file_path in enumerate(target_file_list, start=1):
-                print(f"[{index}/{total_file_count}] 処理中: {file_path}")
+                if not is_simple:
+                    print(f"[{index}/{total_file_count}] 処理中: {file_path}")
                 try:
                     is_success = restore_module.process_image_file_automatically(
-                        file_path, JSON_DATABASE_FULL_PATH
+                        file_path, JSON_DATABASE_FULL_PATH, is_simple
                     )
                     if is_success:
-                        print(f"  └─ [正常完了] 処理成功: {file_path}")
+                        if not is_simple:
+                            print(f"  └─ [正常完了] 処理成功: {file_path}")
                         success_count += 1
                     else:
-                        print(f"  └─ [警告] スキップまたは失敗: {file_path}")
+                        if not is_simple:
+                            print(f"  └─ [警告] スキップまたは失敗: {file_path}")
                 except Exception as error_exception:
                     print(f"  └─ [エラー] 例外が発生しました: {error_exception}")
 

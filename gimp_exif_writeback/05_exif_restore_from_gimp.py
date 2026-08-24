@@ -18,11 +18,13 @@ Requires:
     - Pillow (PIL): 画像処理・Exifデータ解析および編集用ライブラリ (pip install Pillow)
 
 Author:
-    Google Gemini3.6 Flash Collaborating Coding
+    Google Gemini Collaborative Coding
 
 Version:
-    1.0.0 (2026/08/16) 
+    1.0.0 (2026/08/16)
     1.1.0 (2026/08/21) キー重複時の Software 値変更検知・DB更新スキップ判定を追加
+    1.2.0 (2026/08/23) 簡易表示モード (is_simple_mode) オプションの追加
+    1.2.1 (2026/08/23) 簡易表示時の[Skip]/[Error]/[登録]表示判定ロジックの修正
 """
 
 import json
@@ -177,8 +179,8 @@ def get_exif_tag_value_by_name(image_path: str, tag_name: str) -> Optional[str]:
 
 
 def register_original_software_database(
-    image_path: str, database_file_path: str
-) -> bool:
+    image_path: str, database_file_path: str, is_simple_mode: bool = False
+) -> str:
     """Gimpで書き換えられていないオリジナルの JPG ファイルから「Make」「Model」「Software」を取得し、
 
     「Make|Model」をキーとして JSON データベースに登録・保存します。
@@ -187,9 +189,10 @@ def register_original_software_database(
     Args:
         image_path (str): オリジナル画像のファイルパス
         database_file_path (str): JSON データベースのファイルパス
+        is_simple_mode (bool): 簡易表示モードフラグ（デフォルト: False）
 
     Returns:
-        bool: 登録/更新成功時および同一内容でスキップ時 True, エラー発生時 False
+        str: 処理結果ステータス ("REGISTERED", "UPDATED", "SKIPPED", "ERROR")
     """
     # ── [ステップ1] 各属性値の取得 ──
     make_value = get_exif_tag_value_by_name(image_path, "Make")
@@ -197,10 +200,11 @@ def register_original_software_database(
     raw_software_value = get_exif_tag_value_by_name(image_path, "Software")
 
     if not make_value or not model_value:
-        print(
-            "エラー: 画像内に Make または Model の情報が存在しません。DB登録をスキップします。"
-        )
-        return False
+        if not is_simple_mode:
+            print(
+                "エラー: 画像内に Make または Model の情報が存在しません。DB登録をスキップします。"
+            )
+        return "ERROR"
 
     make_clean_value = make_value.strip()
     model_clean_value = model_value.strip()
@@ -214,50 +218,63 @@ def register_original_software_database(
     database_data = load_json_database(database_file_path)
     database_key = f"{make_clean_value}|{model_clean_value}"
 
+    is_update = False
     if database_key in database_data:
         existing_software_value = database_data[database_key]
 
-        # 登録済みの値と新規の値が完全に一致する場合は処理を行わず終了
+        # 登録済みの値と新規の値が完全に一致する場合は処理を行わずスキップ
         if existing_software_value == software_clean_value:
-            display_val = (
+            if not is_simple_mode:
+                display_val = (
+                    f"'{software_clean_value}'"
+                    if software_clean_value
+                    else "なし (null)"
+                )
+                print(f"[データベーススキップ]")
+                print(f"  ・キー      : '{database_key}'")
+                print(
+                    f"  ・Software  : {display_val} (既存データと同一のため更新を行いません)"
+                )
+            return "SKIPPED"
+
+        # 値が異なる場合はアップデート
+        is_update = True
+        if not is_simple_mode:
+            old_val_disp = (
+                f"'{existing_software_value}'"
+                if existing_software_value
+                else "なし (null)"
+            )
+            new_val_disp = (
                 f"'{software_clean_value}'" if software_clean_value else "なし (null)"
             )
-            print(f"[データベーススキップ]")
+            print(f"[データベースアップデート]")
             print(f"  ・キー      : '{database_key}'")
-            print(
-                f"  ・Software  : {display_val} (既存データと同一のため更新を行いません)"
-            )
-            return True
-
-        # 値が異なる場合はアップデートログを出力
-        old_val_disp = (
-            f"'{existing_software_value}'" if existing_software_value else "なし (null)"
-        )
-        new_val_disp = (
-            f"'{software_clean_value}'" if software_clean_value else "なし (null)"
-        )
-        print(f"[データベースアップデート]")
-        print(f"  ・キー      : '{database_key}'")
-        print(f"  ・Software  : {old_val_disp} -> {new_val_disp}")
+            print(f"  ・Software  : {old_val_disp} -> {new_val_disp}")
     else:
-        # 新規登録時のログ出力
-        new_val_disp = (
-            f"'{software_clean_value}'" if software_clean_value else "なし (null)"
-        )
-        print(f"[データベース新規登録]")
-        print(f"  ・キー      : '{database_key}'")
-        print(f"  ・Software  : {new_val_disp}")
+        if not is_simple_mode:
+            # 新規登録時のログ出力
+            new_val_disp = (
+                f"'{software_clean_value}'" if software_clean_value else "なし (null)"
+            )
+            print(f"[データベース新規登録]")
+            print(f"  ・キー      : '{database_key}'")
+            print(f"  ・Software  : {new_val_disp}")
 
     # ── [ステップ3] JSON データベースへ保存 ──
     database_data[database_key] = software_clean_value
 
     if save_json_database(database_data, database_file_path):
-        print(f"  ・保存先    : {database_file_path}")
-        return True
-    return False
+        if not is_simple_mode:
+            print(f"  ・保存先    : {database_file_path}")
+        return "UPDATED" if is_update else "REGISTERED"
+
+    return "ERROR"
 
 
-def restore_exif_data_from_gimp(image_path: str, database_file_path: str) -> bool:
+def restore_exif_data_from_gimp(
+    image_path: str, database_file_path: str, is_simple_mode: bool = False
+) -> bool:
     """Gimpで書き換えられた JPG ファイルの Exif（Software, DateTime）を復元して上書き保存します。
 
     ※ 元の Software が「なし (null)」の場合は Software タグ自体を削除します。
@@ -265,6 +282,7 @@ def restore_exif_data_from_gimp(image_path: str, database_file_path: str) -> boo
     Args:
         image_path (str): 復元対象の画像ファイルパス
         database_file_path (str): JSON データベースのファイルパス
+        is_simple_mode (bool): 簡易表示モードフラグ（デフォルト: False）
 
     Returns:
         bool: 復元成功時 True, 失敗時 False
@@ -274,17 +292,21 @@ def restore_exif_data_from_gimp(image_path: str, database_file_path: str) -> boo
     model_value = get_exif_tag_value_by_name(image_path, "Model")
 
     if not make_value or not model_value:
-        print("エラー: 復元に必要な Make または Model の情報が取得できませんでした。")
+        if not is_simple_mode:
+            print(
+                "エラー: 復元に必要な Make または Model の情報が取得できませんでした。"
+            )
         return False
 
     database_key = f"{make_value.strip()}|{model_value.strip()}"
     database_data = load_json_database(database_file_path)
 
     if database_key not in database_data:
-        print(f"エラー: データベースにキー '{database_key}' が未登録です。")
-        print(
-            "先にこのカメラ（Make/Model）で撮影されたオリジナル画像を通してください。"
-        )
+        if not is_simple_mode:
+            print(f"エラー: データベースにキー '{database_key}' が未登録です。")
+            print(
+                "先にこのカメラ（Make/Model）で撮影されたオリジナル画像を通してください。"
+            )
         return False
 
     restored_software_value = database_data[database_key]
@@ -299,9 +321,10 @@ def restore_exif_data_from_gimp(image_path: str, database_file_path: str) -> boo
         )
 
     if not original_date_time_value:
-        print(
-            "エラー: DateTimeOriginal および DateTimeDigitized を取得できませんでした。"
-        )
+        if not is_simple_mode:
+            print(
+                "エラー: DateTimeOriginal および DateTimeDigitized を取得できませんでした。"
+            )
         return False
 
     # ── [ステップ3] タグ ID の特定と書き換え・削除処理 ──
@@ -316,7 +339,8 @@ def restore_exif_data_from_gimp(image_path: str, database_file_path: str) -> boo
                 break
 
     if date_time_tag_id is None:
-        print("エラー: DateTime タグ ID の特定に失敗しました。")
+        if not is_simple_mode:
+            print("エラー: DateTime タグ ID の特定に失敗しました。")
         return False
 
     try:
@@ -349,19 +373,27 @@ def restore_exif_data_from_gimp(image_path: str, database_file_path: str) -> boo
             # 画像への上書き保存
             current_image.save(image_path, exif=exif_data)
 
-            print(f"[Exif復元完了] {image_path}")
-            print(f"  ・Software : '{old_software_value}' -> {restored_software_disp}")
-            print(
-                f"  ・DateTime : '{old_date_time_value}' -> '{original_date_time_value}'"
-            )
+            if not is_simple_mode:
+                print(f"[Exif復元完了] {image_path}")
+                print(
+                    f"  ・Software : '{old_software_value}' -> {restored_software_disp}"
+                )
+                print(
+                    f"  ・DateTime : '{old_date_time_value}' -> '{original_date_time_value}'"
+                )
             return True
 
     except Exception as error_message:
-        print(f"エラー: Exif 復元書き込み中にエラーが発生しました -> {error_message}")
+        if not is_simple_mode:
+            print(
+                f"エラー: Exif 復元書き込み中にエラーが発生しました -> {error_message}"
+            )
         return False
 
 
-def process_image_file_automatically(image_path: str, database_file_path: str) -> bool:
+def process_image_file_automatically(
+    image_path: str, database_file_path: str, is_simple_mode: bool = False
+) -> bool:
     """Software タグの値を検査し、Gimp 文字列が含まれるかに応じて
 
     『DB登録』か『Exif復元』かを自動判定して実行します。
@@ -369,26 +401,48 @@ def process_image_file_automatically(image_path: str, database_file_path: str) -
     Args:
         image_path (str): 対象画像ファイルのパス
         database_file_path (str): JSON データベースのファイルパス
+        is_simple_mode (bool): 簡易表示モードフラグ（デフォルト: False）
 
     Returns:
-        bool: 処理成功時 True, 失敗時 False
+        bool: 処理成功時 (スキップ含) True, エラー時 False
     """
-    print(f"\n[処理開始] 画像ファイル: {image_path}")
+    if not is_simple_mode:
+        print(f"\n[処理開始] 画像ファイル: {image_path}")
 
     # ── [ステップ1] Software タグ文字列の解析 ──
     software_value = get_exif_tag_value_by_name(image_path, "Software")
 
     # ── [ステップ2] Gimp 書き換え判定と処理の自動分岐 ──
     if software_value and "gimp" in software_value.lower():
-        print(
-            "判定結果: Gimp による書き換えを検知しました -> 【復元モード】を実行します"
+        if not is_simple_mode:
+            print(
+                "判定結果: Gimp による書き換えを検知しました -> 【復元モード】を実行します"
+            )
+        is_success = restore_exif_data_from_gimp(
+            image_path, database_file_path, is_simple_mode
         )
-        return restore_exif_data_from_gimp(image_path, database_file_path)
+        if is_simple_mode:
+            status_text = "[復元]" if is_success else "[Error]"
+            print(f"{status_text} {image_path}")
+        return is_success
     else:
-        print(
-            "判定結果: オリジナル画像（Gimp未検知）です -> 【DB自動登録モード】を実行します"
+        if not is_simple_mode:
+            print(
+                "判定結果: オリジナル画像（Gimp未検知）です -> 【DB自動登録モード】を実行します"
+            )
+        result_status = register_original_software_database(
+            image_path, database_file_path, is_simple_mode
         )
-        return register_original_software_database(image_path, database_file_path)
+        if is_simple_mode:
+            if result_status in ("REGISTERED", "UPDATED"):
+                status_text = "[登録]"
+            elif result_status == "SKIPPED":
+                status_text = "[Skip]"
+            else:
+                status_text = "[Error]"
+            print(f"{status_text} {image_path}")
+
+        return result_status != "ERROR"
 
 
 def main() -> None:
@@ -407,7 +461,9 @@ def main() -> None:
         print(f"エラー: 指定されたファイルが存在しません -> {target_image_path}")
         sys.exit(1)
 
-    process_image_file_automatically(target_image_path, JSON_DATABASE_FULL_PATH)
+    process_image_file_automatically(
+        target_image_path, JSON_DATABASE_FULL_PATH, is_simple_mode=False
+    )
 
 
 if __name__ == "__main__":
