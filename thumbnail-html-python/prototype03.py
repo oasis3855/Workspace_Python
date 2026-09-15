@@ -30,6 +30,7 @@ Author:
 Version:
     1.0.0 (2026/08/30)
     1.1.0 (2026/09/06) サムネイル画像生成,Exif撮影日時読み込みの既定値を変更
+    1.2.0 (2026/09/06) 撮影地の補完コピー／重複クリア処理
 """
 
 import csv
@@ -51,7 +52,8 @@ DEFAULT_FILENAME_MAX_LENGTH: int = 10
 DEFAULT_TABLE_EDITOR_JS_PATH: str = "table_editor.js"
 DEFAULT_UPDATE_EXIF_DATE: bool = True
 DEFAULT_OVERWRITE_THUMBNAIL: bool = False
-
+# "none": なにもしない, "fill": 上の撮影地で補完, "clear": 連続する同一撮影地を空白化
+DEFAULT_FILL_LOCATION_MODE: str = "none"
 
 def create_backup_file(target_file_path: Path) -> Optional[Path]:
     """
@@ -386,47 +388,58 @@ def generate_resized_thumbnail(
         )
         return target_long_edge, target_long_edge, False
 
-
 def sort_image_records(
-    records_list: List[Dict[str, Any]], sort_choice: str
+    records_list: List[Dict[str, Any]],
+    sort_choice: str,
+    by_location: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     指定されたソート基準に従って画像レコードのリストを並び替える。
 
     Args:
         records_list (List[Dict[str, Any]]): ソート対象のレコードリスト
-        sort_choice (str): ユーザーが選択したソートオプション ("1", "2", "3", "4")
+        sort_choice (str): ユーザーが選択した二次ソートキー ("1", "2", "3", "4")
+        by_location (bool): 撮影地順（A...Z）を最優先ソートキーにするか否か
 
     Returns:
         List[Dict[str, Any]]: 並び替え後のレコードリスト
     """
-    # ── [ステップ1] ソート条件分岐処理 ──
+    # ── [ステップ1] 二次ソート（ファイル名順またはExif日時順） ──
     if sort_choice == "1":
         # 1: ファイル名順（A...Z）
-        return sorted(
+        sorted_records = sorted(
             records_list, key=lambda record: record["file_stem"].lower()
         )
     elif sort_choice == "2":
         # 2: ファイル名順（Z...A）
-        return sorted(
+        sorted_records = sorted(
             records_list,
             key=lambda record: record["file_stem"].lower(),
             reverse=True,
         )
     elif sort_choice == "4":
         # 4: Exifタイムスタンプ順（未来->過去）
-        return sorted(
+        sorted_records = sorted(
             records_list,
             key=lambda record: record["parsed_datetime"] or datetime.min,
             reverse=True,
         )
     else:
         # 3: Exifタイムスタンプ順（過去->未来）［デフォルト］
-        return sorted(
+        sorted_records = sorted(
             records_list,
             key=lambda record: record["parsed_datetime"] or datetime.min,
         )
 
+    # ── [ステップ2] 最優先条件：撮影地順（A...Z）の適用 ──
+    # Pythonの sorted() は安定ソートのため、二次ソート済みの順序を保ったまま撮影地ごとにまとまります。
+    if by_location:
+        sorted_records = sorted(
+            sorted_records,
+            key=lambda record: (record.get("location") or "").lower(),
+        )
+
+    return sorted_records
 
 def ask_yes_no_question(prompt_message: str, default_yes: bool = True) -> bool:
     """
@@ -523,6 +536,70 @@ def get_subdir_by_cli(base_dir: Path) -> str:
                 return raw_options[val]
         print("無効な入力です。リストの番号を入力してください。")
 
+def apply_location_fill_or_clear(
+data_dict: Dict[str, Dict[str, str]], mode: str
+) -> Dict[str, Dict[str, str]]:
+    """
+    撮影地（location）データに対して、キャリーオーバー（補完）または重複クリア処理を一括適用する。
+
+    Args:
+        data_dict (Dict[str, Dict[str, str]]): 処理対象の辞書型レコード（順序確定済みであること）
+        mode (str): 処理モード ("none", "fill", "clear")
+
+    Returns:
+        List[Dict[str, Any]]: 撮影地フィールド補正後のレコードリスト
+    """
+    if mode == "none" or not data_dict:
+        return data_dict
+
+    last_location = ""
+
+    if mode == "fill":
+        for key, item in data_dict.items():
+            current_loc = item.get("location", "").strip()
+            if not current_loc:
+                item["location"] = last_location
+            else:
+                last_location = current_loc
+
+    elif mode == "clear":
+        for key, item in data_dict.items():
+            current_loc = item.get("location", "").strip()
+            if current_loc and current_loc == last_location:
+                item["location"] = ""
+            elif current_loc:
+                last_location = current_loc
+
+    return data_dict
+
+
+def ask_location_mode() -> str:
+    """
+    撮影地（location）のカラムデータ補正モードを対話式で決定する。
+
+    Returns:
+        str: 選択されたモード ("none", "fill", "clear")
+    """
+    print("\n撮影地（location）データの補正モードを選択してください:")
+    print("  1: なにもしない [既定値]")
+    print("  2: 撮影地が空白の場合、直上の撮影地をコピーして埋める (fill)")
+    print("  3: 直上と同じ撮影地が連続する場合、空白にする (clear)")
+
+    default_num = {"none": "1", "fill": "2", "clear": "3"}.get(
+        DEFAULT_FILL_LOCATION_MODE, "1"
+    )
+
+    choice = input(
+        f"選択肢を入力してください (1-3) [既定値: {default_num}]: "
+    ).strip()
+
+    if choice == "2":
+        return "fill"
+    elif choice == "3":
+        return "clear"
+    else:
+        return "none"
+
 def process_generate_thumbnail_html() -> None:
     """
     【機能1】指定フォルダ内のJPG画像を検索し、画像ディレクトリ下にサムネイルを作成してHTMLを生成・更新する。
@@ -541,12 +618,6 @@ def process_generate_thumbnail_html() -> None:
 
     # ── [ステップ2] サブディレクトリおよびパラメータの設定 ──
     sub_dir_input = get_subdir_by_cli(base_directory)
-    # sub_dir_input = (
-    #     input(
-    #         "jpgファイルが存在する1段階下のディレクトリ名を入力してください（直下の場合は何も入力せずEnter）: "
-    #     )
-    #     .strip()
-    # )
 
     if sub_dir_input:
         target_directory = base_directory / sub_dir_input
@@ -592,6 +663,9 @@ def process_generate_thumbnail_html() -> None:
         default_yes=DEFAULT_OVERWRITE_THUMBNAIL,
     )
 
+    # 撮影地処理モードの問い合わせ
+    location_mode = ask_location_mode()
+
     # ── [ステップ3] HTML行のソート順選択 ──
     print("\nHTMLの行のソート順を選択してください:")
     print("  1: ファイル名順（A...Z）")
@@ -601,6 +675,12 @@ def process_generate_thumbnail_html() -> None:
     sort_choice_input = input("選択肢を入力してください (1-4) [既定値: 3]: ").strip()
     if sort_choice_input not in ["1", "2", "3", "4"]:
         sort_choice_input = "3"
+
+    # 撮影地順を最優先にするかの問い合わせ
+    sort_by_location = ask_yes_no_question(
+        "撮影地順（A...Z）を最優先にして並び替えますか？",
+        default_yes=False,
+    )
 
     # ── [ステップ4] 出力先HTMLファイルの選択 ──
     print("出力するHTMLファイルのパスとファイル名をダイアログで指定してください...")
@@ -618,6 +698,12 @@ def process_generate_thumbnail_html() -> None:
 
     # ── [ステップ5] 既存HTMLファイルの解析（既存データの保持用） ──
     existing_data = parse_html_table(output_html_path)
+
+    # ── [ステップ5.1] 撮影地補完処理（fill, clearモードの場合） ──
+    if location_mode == "fill" or location_mode == "clear":
+        existing_data = apply_location_fill_or_clear(existing_data, location_mode)
+
+
 
     # ── [ステップ6] 対象JPGファイルの検出 ──
     jpg_files = sorted(
@@ -641,7 +727,7 @@ def process_generate_thumbnail_html() -> None:
     thumbnails_save_dir = target_directory / thumb_dir_name
     image_dir_name = target_directory.name
 
-    record_items: List[Dict[str, Union[str, Optional[datetime]]]] = []
+    record_items: List[Dict[str, Any]] = []
     processed_thumb_paths: set = set()  # 実体ファイルが存在したパスの記録
     migrated_count = 0
     added_count = 0
@@ -727,6 +813,9 @@ def process_generate_thumbnail_html() -> None:
     print("\n")
 
     # ── [ステップ7.5] 既存データのうち元JPGが存在しない「削除データ」の保持処理 ──
+    # (existing_dataに登録されている削除されたjpgファイルのデータは、
+    #   processed_thumb_pathsに格納された現存jpgデータの後ろに追加され、
+    #   最終的なレコードセットrecord_itemsになる)
     deleted_count = 0
     for thumb_path, old_item in existing_data.items():
         if thumb_path not in processed_thumb_paths:
@@ -763,8 +852,12 @@ def process_generate_thumbnail_html() -> None:
             )
             deleted_count += 1
 
-    # ── [ステップ8] レコードのソート処理 ──
-    sorted_records = sort_image_records(record_items, sort_choice_input)
+    # # ── [ステップ8.1] ソート前の撮影地補完処理（fill, clearモードの場合） ──
+    # if location_mode == "fill" or location_mode == "clear":
+    #     record_items = apply_location_fill_or_clear(record_items, location_mode)
+
+    # ── [ステップ8.2] レコードのソート処理 ──
+    sorted_records = sort_image_records(record_items, sort_choice_input, by_location=sort_by_location)
 
     # ── [ステップ9] HTML行の構築 ──
     html_table_rows: List[str] = []
@@ -836,13 +929,35 @@ def process_convert_html_to_csv() -> None:
         print("保存先の指定がキャンセルされました。")
         return
 
+    # 撮影地処理モードの問い合わせ
+    location_mode = ask_location_mode()
+
     # ── [ステップ3] HTMLの解析とデータ抽出 ──
     parsed_data = parse_html_table(input_html_path)
     total_data_rows = len(parsed_data)
 
     print(f"HTMLデータ行数 {total_data_rows}行 をCSV出力用に抽出しました。")
 
-    # ── [ステップ4] CSVファイルへの構造化書き込み（上書き前バックアップ実施） ──
+    # ── [ステップ4] 撮影地データの処理を適用 ──
+    parsed_data = apply_location_fill_or_clear(parsed_data, location_mode)
+
+
+    # ── [ステップ5] 辞書データからリスト構造へ変換 ──
+    records_list: List[Dict[str, Any]] = []
+    for thumb_src, item_data in parsed_data.items():
+        records_list.append(
+            {
+                "original_src": item_data["original_src"],
+                "thumb_src": thumb_src,
+                "exif_date": item_data["exif_date"],
+                "location": item_data["location"],
+                "comment": item_data["comment"],
+                "flag": item_data["flag"],
+            }
+        )
+
+
+    # ── [ステップ6] CSVファイルへの構造化書き込み（上書き前バックアップ実施） ──
     create_backup_file(output_csv_path)
 
     with open(
@@ -863,15 +978,15 @@ def process_convert_html_to_csv() -> None:
         )
 
         # データ行の書き込み
-        for thumb_src, item_data in parsed_data.items():
+        for item in records_list:
             csv_writer.writerow(
                 [
-                    item_data["original_src"],
-                    thumb_src,
-                    item_data["exif_date"],
-                    item_data["location"],
-                    item_data["comment"],
-                    item_data["flag"],
+                    item["original_src"],
+                    item["thumb_src"],
+                    item["exif_date"],
+                    item["location"],
+                    item["comment"],
+                    item["flag"],
                 ]
             )
 
