@@ -31,11 +31,13 @@ Version:
     1.0.0 (2026/08/30)
     1.1.0 (2026/09/06) サムネイル画像生成,Exif撮影日時読み込みの既定値を変更
     1.2.0 (2026/09/06) 撮影地の補完コピー／重複クリア処理
+    1.3.0 (2026/09/16) 撮影地・コメントほか文字列の前後改行trim, 日時改行trim等
 """
 
 import csv
 from datetime import datetime
 from pathlib import Path
+import re
 import shutil
 import tkinter as tk
 from tkinter import filedialog
@@ -54,6 +56,7 @@ DEFAULT_UPDATE_EXIF_DATE: bool = True
 DEFAULT_OVERWRITE_THUMBNAIL: bool = False
 # "none": なにもしない, "fill": 上の撮影地で補完, "clear": 連続する同一撮影地を空白化
 DEFAULT_FILL_LOCATION_MODE: str = "none"
+DEFAULT_DATETIME_FORMAT: str = "%Y/%m/%d<br />%H:%M:%S"
 
 def create_backup_file(target_file_path: Path) -> Optional[Path]:
     """
@@ -232,7 +235,7 @@ def get_image_exif_date(image_path: Path) -> Tuple[str, Optional[datetime]]:
                 parsed_datetime = datetime.strptime(
                     str(date_str), "%Y:%m:%d %H:%M:%S"
                 )
-                formatted_date = parsed_datetime.strftime("%Y/%m/%d %H:%M:%S")
+                formatted_date = parsed_datetime.strftime(DEFAULT_DATETIME_FORMAT)
                 return formatted_date, parsed_datetime
             except ValueError:
                 parts = str(date_str).split(" ")
@@ -244,10 +247,108 @@ def get_image_exif_date(image_path: Path) -> Tuple[str, Optional[datetime]]:
     except Exception:
         return "", None
 
+def clean_html_line_breaks(text: str) -> str:
+    """
+    文字列に含まれる HTML の改行タグ（<br>, <br/>, <br /> など）を除去する。
+
+    Args:
+        text (str): 処理対象の文字列
+
+    Returns:
+        str: 改行タグを除去した文字列
+    """
+
+    # ── [ステップ1] 文字列先頭・末尾の改行タグ・空白の除去 ──
+    cleaned_text = sanitize_multiline_text(text)
+
+    # ── [ステップ1] 正規表現による文字列中の改行タグを空白1文字に置換 ──
+    # <br>, <br/>, <br /> などの大文字小文字を問わず除去する
+    cleaned_text = re.sub(r"<br\s*/?>", " ", cleaned_text, flags=re.IGNORECASE)
+
+    return cleaned_text.strip()
+
+
+def parse_and_format_exif_date(raw_date_str: str) -> str:
+    """
+    文字列から改行タグを除去し、日時文字列として正しいか検証した上で
+    yyyy/mm/dd HH:MM:SS 形式に整形して返す。
+
+    Args:
+        raw_date_str (str): HTMLから抽出した生の撮影日時文字列
+
+    Returns:
+        str: 整形済みの撮影日時文字列（判定不能な場合は改行除去後の文字列）
+    """
+    # ── [ステップ1] 改行タグの除去と前後の空白削除 ──
+    cleaned_date_str = clean_html_line_breaks(raw_date_str)
+
+    if not cleaned_date_str:
+        return ""
+
+    # ── [ステップ2] 想定される日時フォーマット群の定義 ──
+    # 区切り文字の違い（/ や :）やスラッシュ区切りのバリエーションに対応
+    date_formats = [
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y:%m:%d %H:%M:%S",
+        "%Y/%m/%d",
+    ]
+
+    # ── [ステップ3] 日時文字列のパース検証とフォーマット整形 ──
+    for date_format in date_formats:
+        try:
+            parsed_datetime = datetime.strptime(cleaned_date_str, date_format)
+            # yyyy/mm/dd HH:MM:SS 形式に変換して返却
+            return parsed_datetime.strftime("%Y/%m/%d %H:%M:%S")
+        except ValueError:
+            continue
+
+    # パースできなかった場合は改行のみ除去した文字列を保持する
+    return cleaned_date_str
+
+
+def extract_cell_inner_html(cell_tag: BeautifulSoup) -> str:
+    """
+    BeautifulSoup の td/th タグ要素から内部の HTML 文字列を取得する。
+
+    Args:
+        cell_tag (BeautifulSoup): 解析対象のセル要素
+
+    Returns:
+        str: セル内部の HTML 文字列（前後空白調整済み）
+    """
+    # ── [ステップ1] セル内部コンテンツの抽出 ──
+    inner_html = "".join(str(child) for child in cell_tag.contents)
+
+    return inner_html.strip()
+
+
+def sanitize_multiline_text(raw_text: str) -> str:
+    """
+    改行タグ（<br/>等）を維持しつつ、文字列全体の前後に存在する改行タグや空白を除去する。
+
+    Args:
+        raw_text (str): 処理対象の文字列
+
+    Returns:
+        str: 前後の改行タグを除去した文字列
+    """
+    # ── [ステップ1] 行頭・行末に存在する改行タグおよび空白のパターン定義 ──
+    # 行頭または行末にある <br>, <br/>, <br /> と空白文字を繰り返し除去する
+    leading_pattern = r"^(\s*<br\s*/?>\s*)+"
+    trailing_pattern = r"(\s*<br\s*/?>\s*)+$"
+
+    # ── [ステップ2] 前後の不要な改行タグを除去 ──
+    sanitized_text = re.sub(leading_pattern, "", raw_text, flags=re.IGNORECASE)
+    sanitized_text = re.sub(trailing_pattern, "", sanitized_text, flags=re.IGNORECASE)
+
+    return sanitized_text.strip()
+
 
 def parse_html_table(html_file_path: Path) -> Dict[str, Dict[str, str]]:
     """
     既存のサムネイルHTMLテーブルを解析し、サムネイル画像相対パスをキーとしたデータ辞書を抽出する。
+    要素ごとの改行ルールに従って文字列の洗浄処理を行う。
 
     Args:
         html_file_path (Path): 読み込むHTMLファイルのパス
@@ -282,29 +383,61 @@ def parse_html_table(html_file_path: Path) -> Dict[str, Dict[str, str]]:
                 str(img_anchor_tag["href"]) if img_anchor_tag else ""
             )
 
+            # ── [ステップ4] 項目ごとの文字洗浄・整形処理（7列フォーマット） ──
+            # 改行を一切許可しない項目（<br/>等を除去）
+            dir_name = clean_html_line_breaks(columns[0].get_text())
+            file_stem = clean_html_line_breaks(columns[1].get_text())
+            flag_val = clean_html_line_breaks(columns[6].get_text())
+
+            # 日時検証・フォーマット整形（改行除去・yyyy/mm/dd HH:MM:SS化）
+            exif_date_raw = extract_cell_inner_html(columns[3])
+            exif_date = parse_and_format_exif_date(exif_date_raw)
+
+            # 改行（<br/>等）を許容し、前後のみ除去する項目
+            location_raw = extract_cell_inner_html(columns[4])
+            location_val = sanitize_multiline_text(location_raw)
+
+            comment_raw = extract_cell_inner_html(columns[5])
+            comment_val = sanitize_multiline_text(comment_raw)
+
             parsed_data[thumb_src] = {
-                "dir_name": columns[0].get_text(strip=True),
-                "file_stem": columns[1].get_text(strip=True),
+                "dir_name": dir_name,
+                "file_stem": file_stem,
                 "original_src": original_src,
-                "exif_date": columns[3].get_text(strip=True),
-                "location": columns[4].get_text(strip=True),
-                "comment": columns[5].get_text(strip=True),
-                "flag": columns[6].get_text(strip=True),
+                "exif_date": exif_date,
+                "location": location_val,
+                "comment": comment_val,
+                "flag": flag_val,
             }
+
         elif len(columns) >= 5:
-            # 従来フォーマット対応
+            # 従来フォーマット対応（5列）
             img_tag = columns[1].find("img")
             if not img_tag or not img_tag.get("src"):
                 continue
 
             thumb_src = str(img_tag["src"])
+
+            # ── [ステップ5] 項目ごとの文字洗浄・整形処理（5列フォーマット） ──
+            file_stem = clean_html_line_breaks(columns[0].get_text())
+
+            # 日時検証・フォーマット整形（改行除去・yyyy/mm/dd HH:MM:SS化）
+            exif_date_raw = extract_cell_inner_html(columns[2])
+            exif_date = parse_and_format_exif_date(exif_date_raw)
+
+            location_raw = extract_cell_inner_html(columns[3])
+            location_val = sanitize_multiline_text(location_raw)
+
+            comment_raw = extract_cell_inner_html(columns[4])
+            comment_val = sanitize_multiline_text(comment_raw)
+
             parsed_data[thumb_src] = {
                 "dir_name": "",
-                "file_stem": columns[0].get_text(strip=True),
+                "file_stem": file_stem,
                 "original_src": "",
-                "exif_date": columns[2].get_text(strip=True),
-                "location": columns[3].get_text(strip=True),
-                "comment": columns[4].get_text(strip=True),
+                "exif_date": exif_date,
+                "location": location_val,
+                "comment": comment_val,
                 "flag": "0",
             }
 
@@ -784,7 +917,7 @@ def process_generate_thumbnail_html() -> None:
             if exif_date:
                 try:
                     parsed_datetime = datetime.strptime(
-                        exif_date, "%Y/%m/%d %H:%M:%S"
+                        exif_date, DEFAULT_DATETIME_FORMAT
                     )
                 except ValueError:
                     parsed_datetime = None
@@ -829,7 +962,7 @@ def process_generate_thumbnail_html() -> None:
             if old_item["exif_date"]:
                 try:
                     parsed_dt = datetime.strptime(
-                        old_item["exif_date"], "%Y/%m/%d %H:%M:%S"
+                        old_item["exif_date"], DEFAULT_DATETIME_FORMAT
                     )
                 except ValueError:
                     parsed_dt = None
